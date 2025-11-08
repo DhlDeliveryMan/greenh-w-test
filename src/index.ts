@@ -155,6 +155,12 @@ process.stdin.on("data", (input: string | Buffer) => {
 
     warningHandler.issueWarning(warning);
   }
+  if (str === "w") {
+    rs485Handler.sendCommand({ cmd: "who", id: uuid() });
+  }
+  if (str === "p") {
+    rs485Handler.sendCommand({ cmd: "ping", id: uuid() });
+  }
 });
 
 const server = net.createServer((socket) => {

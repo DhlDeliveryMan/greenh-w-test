@@ -27,19 +27,18 @@ export interface RS485Options {
 type InternalRS485Options = Required<
   Pick<
     RS485Options,
-    |
-      "path"
-      | "baudRate"
-      | "dataBits"
-      | "stopBits"
-      | "parity"
-      | "delimiter"
-      | "driverEnablePin"
-      | "receiverEnablePin"
-      | "receiverEnableActiveLow"
-      | "turnaroundDelayMs"
-      | "autoReconnect"
-      | "reconnectIntervalMs"
+    | "path"
+    | "baudRate"
+    | "dataBits"
+    | "stopBits"
+    | "parity"
+    | "delimiter"
+    | "driverEnablePin"
+    | "receiverEnablePin"
+    | "receiverEnableActiveLow"
+    | "turnaroundDelayMs"
+    | "autoReconnect"
+    | "reconnectIntervalMs"
   >
 > &
   RS485Options;
@@ -122,7 +121,9 @@ export class RS485Handler extends EventEmitter {
     }
   }
 
-  public async sendCommand(command: Command): Promise<void> {
+  public async sendCommand(
+    command: Command | { cmd: string; id: string }
+  ): Promise<void> {
     const serialized = JSON.stringify(command);
     const delimiterBuffer = Buffer.isBuffer(this.options.delimiter)
       ? this.options.delimiter
@@ -204,9 +205,7 @@ export class RS485Handler extends EventEmitter {
   }
 
   private handleIncoming(data: Buffer | string) {
-    const buffer = Buffer.isBuffer(data)
-      ? data
-      : Buffer.from(data, "utf8");
+    const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
 
     if (!buffer.length) return;
 
@@ -310,7 +309,10 @@ export class RS485Handler extends EventEmitter {
     try {
       pin.writeSync(0);
     } catch (err) {
-      console.warn(`[RS485] Failed to drive ${label} pin low during shutdown`, err);
+      console.warn(
+        `[RS485] Failed to drive ${label} pin low during shutdown`,
+        err
+      );
     }
     try {
       pin.unexport();
@@ -356,9 +358,7 @@ export class RS485Handler extends EventEmitter {
     }
 
     await new Promise<void>((resolve, reject) => {
-      this.port!.close((err?: Error | null) =>
-        err ? reject(err) : resolve()
-      );
+      this.port!.close((err?: Error | null) => (err ? reject(err) : resolve()));
     }).catch((err: Error) => this.emit("error", err));
 
     this.port = undefined;
