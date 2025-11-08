@@ -135,6 +135,10 @@ export class RS485Handler extends EventEmitter {
       delimiterBuffer,
     ]);
 
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] => ${serialized}`);
+    }
+
     await this.sendRaw(payload);
   }
 

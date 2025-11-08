@@ -98,7 +98,10 @@ const broadcastStatusUpdate = () => {
   broadcast(payload);
 };
 
-const sendAck = (socket: net.Socket | undefined, data: Record<string, unknown>) => {
+const sendAck = (
+  socket: net.Socket | undefined,
+  data: Record<string, unknown>
+) => {
   if (!socket || socket.destroyed || !socket.writable) return;
   socket.write(JSON.stringify({ event: "ack", data }) + "\n");
 };
@@ -120,32 +123,6 @@ const sendErrorEvent = (
   }
 };
 
-const dispatchRs485Command = async (
-  command: types.Command,
-  sourceSocket?: net.Socket
-) => {
-  const packet: types.Command = {
-    ...command,
-    uuid: command.uuid ?? uuid(),
-  };
-
-  console.log(
-    `[RS485] Dispatch -> cmd=${packet.cmd} uuid=${packet.uuid}${
-      sourceSocket ? " (socket)" : ""
-    }`
-  );
-
-  try {
-    await rs485Handler.sendCommand(packet);
-    sendAck(sourceSocket, { cmd: packet.cmd, uuid: packet.uuid });
-  } catch (err) {
-    sendErrorEvent(sourceSocket, err as Error, {
-      cmd: packet.cmd,
-      uuid: packet.uuid,
-    });
-  }
-};
-
 rs485Handler.on("status", (status) => {
   RS485_STATUS.status = status;
   if (status === "connected") {
@@ -158,14 +135,6 @@ rs485Handler.on("error", (err: Error) => {
   RS485_STATUS.status = "fail";
   RS485_STATUS.error = err.message;
   broadcastStatusUpdate();
-});
-
-rs485Handler.on("line", (line: string) => {
-  console.log(`[RS485<=] ${line}`);
-});
-
-rs485Handler.on("tx", (buffer: Buffer) => {
-  console.log(`[RS485=>] ${buffer.toString("utf8").trim()}`);
 });
 
 rs485Handler.on("message", (payload: unknown) => {
@@ -218,10 +187,16 @@ process.stdin.on("data", (input: string | Buffer) => {
     warningHandler.issueWarning(warning);
   }
   if (key === "w") {
-    void dispatchRs485Command({ cmd: "who" });
+    const command: types.Command = { cmd: "who", uuid: uuid() };
+    rs485Handler
+      .sendCommand(command)
+      .catch((err) => console.error("Failed to send RS485 who command", err));
   }
   if (key === "p") {
-    void dispatchRs485Command({ cmd: "ping" });
+    const command: types.Command = { cmd: "ping", uuid: uuid() };
+    rs485Handler
+      .sendCommand(command)
+      .catch((err) => console.error("Failed to send RS485 ping command", err));
   }
 });
 
@@ -253,7 +228,19 @@ const server = net.createServer((socket) => {
       try {
         const msg = JSON.parse(raw);
         if (isCommandMessage(msg)) {
-          void dispatchRs485Command(msg, socket);
+          const packet: types.Command = {
+            ...msg,
+            uuid: msg.uuid ?? uuid(),
+          };
+          rs485Handler
+            .sendCommand(packet)
+            .then(() => sendAck(socket, { cmd: packet.cmd, uuid: packet.uuid }))
+            .catch((err) =>
+              sendErrorEvent(socket, err as Error, {
+                cmd: packet.cmd,
+                uuid: packet.uuid,
+              })
+            );
         }
       } catch (err) {
         console.error("Invalid message", err);
