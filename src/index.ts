@@ -19,8 +19,10 @@ const parseNumber = (value?: string) => {
   return Number.isFinite(num) ? num : undefined;
 };
 
+const RS485_DEBUG = process.env.RS485_DEBUG;
+
 const rs485Options: RS485Options = {
-  logTraffic: process.env.RS485_DEBUG === "1",
+  logTraffic: RS485_DEBUG ? RS485_DEBUG !== "0" : true,
   driverEnablePin: 18, // Pi GPIO18 ↔ MAX485 DE
   receiverEnablePin: 23, // Pi GPIO23 ↔ MAX485 RE
   receiverEnableActiveLow: true,
@@ -127,6 +129,12 @@ const dispatchRs485Command = async (
     uuid: command.uuid ?? uuid(),
   };
 
+  console.log(
+    `[RS485] Dispatch -> cmd=${packet.cmd} uuid=${packet.uuid}${
+      sourceSocket ? " (socket)" : ""
+    }`
+  );
+
   try {
     await rs485Handler.sendCommand(packet);
     sendAck(sourceSocket, { cmd: packet.cmd, uuid: packet.uuid });
@@ -153,7 +161,11 @@ rs485Handler.on("error", (err: Error) => {
 });
 
 rs485Handler.on("line", (line: string) => {
-  console.log(`[RS485] ${line}`);
+  console.log(`[RS485<=] ${line}`);
+});
+
+rs485Handler.on("tx", (buffer: Buffer) => {
+  console.log(`[RS485=>] ${buffer.toString("utf8").trim()}`);
 });
 
 rs485Handler.on("message", (payload: unknown) => {
@@ -189,7 +201,9 @@ warningHandler.on("warning", (alert: types.IAlert) => {
 process.stdin.on("data", (input: string | Buffer) => {
   const str = typeof input === "string" ? input : input.toString("utf8");
   if (str === "\u0003") process.exit(); // Ctrl+C
-  if (str === "c") {
+  const key = str.trim();
+
+  if (key === "c") {
     const warning = warningHandler.addWarning({
       id: uuid(),
       type: "overtemp",
@@ -203,10 +217,10 @@ process.stdin.on("data", (input: string | Buffer) => {
 
     warningHandler.issueWarning(warning);
   }
-  if (str === "w") {
+  if (key === "w") {
     void dispatchRs485Command({ cmd: "who" });
   }
-  if (str === "p") {
+  if (key === "p") {
     void dispatchRs485Command({ cmd: "ping" });
   }
 });

@@ -113,6 +113,7 @@ export class RS485Handler extends EventEmitter {
           err ? reject(err) : resolve()
         );
       });
+      this.emit("tx", buffer);
     } finally {
       if (this.options.turnaroundDelayMs > 0) {
         await sleep(this.options.turnaroundDelayMs);
