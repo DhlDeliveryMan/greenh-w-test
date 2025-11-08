@@ -15,6 +15,8 @@ type RemoteStatus = {
   speed?: number;
   lastHeartbeat?: number;
   connectedAt?: number;
+  disconnectedAt?: number;
+  reason?: string;
 };
 
 const RS485_STATUS: {
@@ -33,6 +35,9 @@ const parseNumber = (value?: string) => {
   const num = Number(value);
   return Number.isFinite(num) ? num : undefined;
 };
+
+const HEARTBEAT_TIMEOUT_MS =
+  parseNumber(process.env.RS485_HEARTBEAT_TIMEOUT_MS) ?? 15000;
 
 const RS485_DEBUG = process.env.RS485_DEBUG;
 
@@ -75,6 +80,44 @@ if (process.env.RS485_RE_ACTIVE_LOW) {
 }
 
 const rs485Handler = new RS485Handler(rs485Options);
+let heartbeatMonitorTimer: NodeJS.Timeout | undefined;
+
+const markRemoteDisconnected = (
+  reason?: string,
+  overrideError = true
+): boolean => {
+  const remote = RS485_STATUS.remote;
+  if (!remote.connected) {
+    if (reason) remote.reason = reason;
+    return false;
+  }
+  remote.connected = false;
+  remote.disconnectedAt = Date.now();
+  remote.reason = reason;
+  if (RS485_STATUS.status === "connected") {
+    RS485_STATUS.status = "disconnected";
+  }
+  if (reason && (overrideError || !RS485_STATUS.error)) {
+    RS485_STATUS.error = reason;
+  }
+  return true;
+};
+
+const startHeartbeatMonitor = () => {
+  if (heartbeatMonitorTimer || HEARTBEAT_TIMEOUT_MS <= 0) return;
+  const interval = Math.max(1000, Math.floor(HEARTBEAT_TIMEOUT_MS / 2));
+  heartbeatMonitorTimer = setInterval(() => {
+    const remote = RS485_STATUS.remote;
+    if (!remote.lastHeartbeat) return;
+    if (!remote.connected) return;
+    const age = Date.now() - remote.lastHeartbeat;
+    if (age > HEARTBEAT_TIMEOUT_MS) {
+      if (markRemoteDisconnected("Remote heartbeat timeout")) {
+        broadcastStatusUpdate();
+      }
+    }
+  }, interval);
+};
 
 try {
   fs.unlinkSync(SOCKET_PATH);
@@ -135,6 +178,10 @@ const handleRemotePayload = (payload: unknown) => {
       dirty = true;
     }
     remote.lastHeartbeat = now;
+    remote.disconnectedAt = undefined;
+    remote.reason = undefined;
+    RS485_STATUS.status = "connected";
+    delete RS485_STATUS.error;
     dirty = true;
   } else if (typeof data.heartbeat === "string") {
     if (!remote.connected) {
@@ -147,6 +194,10 @@ const handleRemotePayload = (payload: unknown) => {
       dirty = true;
     }
     remote.lastHeartbeat = now;
+    remote.disconnectedAt = undefined;
+    remote.reason = undefined;
+    RS485_STATUS.status = "connected";
+    delete RS485_STATUS.error;
     dirty = true;
   }
 
@@ -184,6 +235,10 @@ rs485Handler.on("status", (status) => {
   RS485_STATUS.status = status;
   if (status === "connected") {
     delete RS485_STATUS.error;
+    startHeartbeatMonitor();
+  }
+  if (status !== "connected") {
+    markRemoteDisconnected(`RS485 link ${status}`, false);
   }
   broadcastStatusUpdate();
 });
@@ -191,6 +246,7 @@ rs485Handler.on("status", (status) => {
 rs485Handler.on("error", (err: Error) => {
   RS485_STATUS.status = "fail";
   RS485_STATUS.error = err.message;
+  markRemoteDisconnected(err.message);
   broadcastStatusUpdate();
 });
 
@@ -206,6 +262,8 @@ rs485Handler.init().catch((err) => {
   RS485_STATUS.status = "fail";
   RS485_STATUS.error = err.message;
 });
+
+startHeartbeatMonitor();
 
 sensorHandler.on("reading", (reading: types.SensorReading) => {
   try {
