@@ -9,8 +9,23 @@ import { uuid } from "uuidv4";
 import { RS485Handler, RS485Options } from "./rs485Hanlder";
 
 const SOCKET_PATH = "/tmp/greenhouse.sock";
-const RS485_STATUS: { status: types.Status; error?: string } = {
+type RemoteStatus = {
+  connected: boolean;
+  device?: string;
+  speed?: number;
+  lastHeartbeat?: number;
+  connectedAt?: number;
+};
+
+const RS485_STATUS: {
+  status: types.Status;
+  error?: string;
+  remote: RemoteStatus;
+} = {
   status: "disconnected",
+  remote: {
+    connected: false,
+  },
 };
 
 const parseNumber = (value?: string) => {
@@ -98,6 +113,48 @@ const broadcastStatusUpdate = () => {
   broadcast(payload);
 };
 
+const handleRemotePayload = (payload: unknown) => {
+  if (!payload || typeof payload !== "object") return;
+  const data = payload as Record<string, unknown>;
+  const now = Date.now();
+  const remote = RS485_STATUS.remote;
+  let dirty = false;
+
+  if (typeof data.hello === "string") {
+    if (remote.device !== data.hello) {
+      remote.device = data.hello;
+      dirty = true;
+    }
+    if (typeof data.speed === "number" && remote.speed !== data.speed) {
+      remote.speed = data.speed;
+      dirty = true;
+    }
+    if (!remote.connected) {
+      remote.connected = true;
+      remote.connectedAt = now;
+      dirty = true;
+    }
+    remote.lastHeartbeat = now;
+    dirty = true;
+  } else if (typeof data.heartbeat === "string") {
+    if (!remote.connected) {
+      remote.connected = true;
+      remote.connectedAt = now;
+      dirty = true;
+    }
+    if (!remote.device) {
+      remote.device = data.heartbeat;
+      dirty = true;
+    }
+    remote.lastHeartbeat = now;
+    dirty = true;
+  }
+
+  if (dirty) {
+    broadcastStatusUpdate();
+  }
+};
+
 const sendAck = (
   socket: net.Socket | undefined,
   data: Record<string, unknown>
@@ -141,6 +198,7 @@ rs485Handler.on("message", (payload: unknown) => {
   const packet =
     JSON.stringify({ event: "rs485_message", data: payload }) + "\n";
   broadcast(packet);
+  handleRemotePayload(payload);
 });
 
 rs485Handler.init().catch((err) => {
