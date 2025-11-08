@@ -1,11 +1,18 @@
 export type Actuator = "fan" | "pump" | "light" | "climate";
 
 export interface Command {
-  cmd: "set_stage" | "manual_override" | "enable_auto" | "who" | "ping";
-  uuid: string;
+  cmd:
+    | "set_stage"
+    | "manual_override"
+    | "enable_auto"
+    | "who"
+    | "ping"
+    | "warning";
+  uuid?: string;
   stage?: number;
   actuator?: Actuator;
   value?: boolean | number;
+  payload?: Record<string, unknown>;
 }
 
 export interface EventMessage {

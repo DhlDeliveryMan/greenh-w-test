@@ -73,6 +73,12 @@ const warningHandler = new WarningHandler();
 
 const clients = new Set<net.Socket>();
 
+const isCommandMessage = (payload: unknown): payload is types.Command => {
+  if (!payload || typeof payload !== "object") return false;
+  const candidate = payload as { cmd?: unknown };
+  return typeof candidate.cmd === "string";
+};
+
 const broadcast = (payload: string) => {
   for (const client of clients) {
     if (client.destroyed || !client.writable) {
@@ -88,6 +94,48 @@ const broadcastStatusUpdate = () => {
   const payload =
     JSON.stringify({ event: "status_update", data: RS485_STATUS }) + "\n";
   broadcast(payload);
+};
+
+const sendAck = (socket: net.Socket | undefined, data: Record<string, unknown>) => {
+  if (!socket || socket.destroyed || !socket.writable) return;
+  socket.write(JSON.stringify({ event: "ack", data }) + "\n");
+};
+
+const sendErrorEvent = (
+  socket: net.Socket | undefined,
+  error: Error,
+  context: Record<string, unknown>
+) => {
+  const payload =
+    JSON.stringify({
+      event: "rs485_error",
+      data: { ...context, message: error.message },
+    }) + "\n";
+  if (socket && socket.writable && !socket.destroyed) {
+    socket.write(payload);
+  } else {
+    console.error("RS485 command error", context, error);
+  }
+};
+
+const dispatchRs485Command = async (
+  command: types.Command,
+  sourceSocket?: net.Socket
+) => {
+  const packet: types.Command = {
+    ...command,
+    uuid: command.uuid ?? uuid(),
+  };
+
+  try {
+    await rs485Handler.sendCommand(packet);
+    sendAck(sourceSocket, { cmd: packet.cmd, uuid: packet.uuid });
+  } catch (err) {
+    sendErrorEvent(sourceSocket, err as Error, {
+      cmd: packet.cmd,
+      uuid: packet.uuid,
+    });
+  }
 };
 
 rs485Handler.on("status", (status) => {
@@ -156,10 +204,10 @@ process.stdin.on("data", (input: string | Buffer) => {
     warningHandler.issueWarning(warning);
   }
   if (str === "w") {
-    rs485Handler.sendCommand({ cmd: "who", id: uuid() });
+    void dispatchRs485Command({ cmd: "who" });
   }
   if (str === "p") {
-    rs485Handler.sendCommand({ cmd: "ping", id: uuid() });
+    void dispatchRs485Command({ cmd: "ping" });
   }
 });
 
@@ -189,8 +237,10 @@ const server = net.createServer((socket) => {
 
     messages.forEach((raw) => {
       try {
-        const msg: types.Command = JSON.parse(raw);
-        // handleCommand(msg, socket);
+        const msg = JSON.parse(raw);
+        if (isCommandMessage(msg)) {
+          void dispatchRs485Command(msg, socket);
+        }
       } catch (err) {
         console.error("Invalid message", err);
       }
