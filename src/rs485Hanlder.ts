@@ -203,9 +203,15 @@ export class RS485Handler extends EventEmitter {
         new ReadlineParser({ delimiter: this.options.delimiter })
       );
       this.parser = parser;
-      parser.on("data", (data: string | Buffer) => this.handleIncoming(data));
+      parser.on("data", (data: string | Buffer) => {
+        this.handleIncoming(data);
+        console.log(data);
+      });
     } else {
-      this.port.on("data", (data: Buffer) => this.handleIncoming(data));
+      parser.on("data", (data: string | Buffer) => {
+        this.handleIncoming(data);
+        console.log(data);
+      });
     }
   }
 
