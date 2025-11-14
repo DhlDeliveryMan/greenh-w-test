@@ -57,7 +57,7 @@ const DEFAULT_OPTIONS: InternalRS485Options = {
   turnaroundDelayMs: 5,
   autoReconnect: true,
   reconnectIntervalMs: 5000,
-  logTraffic: false,
+  logTraffic: true,
 };
 
 export class RS485Handler extends EventEmitter {
