@@ -12,11 +12,6 @@ type PendingRequest = {
   timer?: NodeJS.Timeout;
 };
 
-const isReplyMessage = (
-  payload: unknown
-): payload is { replyTo?: string; [key: string]: any } =>
-  !!payload && typeof payload === "object";
-
 export class BusManager {
   private readonly transport: RS485Handler;
   private initialized = false;
@@ -72,8 +67,16 @@ export class BusManager {
   }
 
   private handleMessage(message: unknown) {
-    if (!this.current || !isReplyMessage(message)) return;
-    if (message.replyTo !== this.current.id) return;
+    if (!this.current || !message || typeof message !== "object") return;
+    const replyToRaw = (message as Record<string, unknown>).replyTo;
+    if (replyToRaw === undefined || replyToRaw === null) return;
+    const replyTo = String(replyToRaw);
+    if (replyTo !== this.current.id) {
+      console.warn(
+        `[Bus] Received reply for id=${replyTo}, expected ${this.current.id}`
+      );
+      return;
+    }
     this.resolveCurrent(undefined, message);
   }
 
