@@ -49,37 +49,6 @@ const rs485Options: RS485Options = {
   receiverEnableActiveLow: true,
 };
 
-if (process.env.RS485_PORT) rs485Options.path = process.env.RS485_PORT;
-const baudOverride = parseNumber(process.env.RS485_BAUD);
-if (typeof baudOverride === "number") rs485Options.baudRate = baudOverride;
-
-const legacyEnablePin = parseNumber(process.env.RS485_ENABLE_PIN);
-const driverPinOverride = parseNumber(
-  process.env.RS485_DRIVER_PIN ?? process.env.RS485_DE_PIN
-);
-const receiverPinOverride = parseNumber(
-  process.env.RS485_RECEIVER_PIN ?? process.env.RS485_RE_PIN
-);
-
-if (typeof legacyEnablePin === "number") {
-  rs485Options.enablePin = legacyEnablePin;
-  rs485Options.driverEnablePin = undefined;
-  rs485Options.receiverEnablePin = undefined;
-} else {
-  if (typeof driverPinOverride === "number") {
-    rs485Options.driverEnablePin = driverPinOverride;
-  }
-
-  if (typeof receiverPinOverride === "number") {
-    rs485Options.receiverEnablePin = receiverPinOverride;
-  }
-}
-
-if (process.env.RS485_RE_ACTIVE_LOW) {
-  rs485Options.receiverEnableActiveLow =
-    process.env.RS485_RE_ACTIVE_LOW !== "0";
-}
-
 const rs485Handler = new RS485Handler(rs485Options);
 const busManager = new BusManager(rs485Handler);
 busManager.init().catch((err) => {
