@@ -208,9 +208,9 @@ export class RS485Handler extends EventEmitter {
         console.log(data);
       });
     } else {
-      parser.on("data", (data: string | Buffer) => {
-        this.handleIncoming(data);
+      this.port.on("data", (data: Buffer) => {
         console.log(data);
+        this.handleIncoming(data);
       });
     }
   }
