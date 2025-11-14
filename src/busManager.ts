@@ -1,8 +1,7 @@
 import { RS485Handler } from "./rs485Hanlder";
-import { uuid } from "uuidv4";
 import type { Command } from "./types";
 
-type RequestPayload = Record<string, any> & { cmd: string };
+type RequestPayload = Record<string, any> & { cmd: string; id?: string };
 
 type PendingRequest = {
   id: string;
@@ -23,6 +22,7 @@ export class BusManager {
   private initialized = false;
   private queue: PendingRequest[] = [];
   private current?: PendingRequest;
+  private nextIdValue = 0;
 
   constructor(transport: RS485Handler) {
     this.transport = transport;
@@ -39,7 +39,7 @@ export class BusManager {
     payload: RequestPayload,
     timeoutMs = 500
   ): Promise<unknown> {
-    const packetId = uuid();
+    const packetId = payload.id ?? this.nextRequestId();
     const packet: Command & RequestPayload = {
       ...payload,
       id: packetId,
@@ -96,5 +96,11 @@ export class BusManager {
     else resolve(result);
 
     this.processQueue();
+  }
+
+  private nextRequestId(): string {
+    const id = this.nextIdValue % 1000;
+    this.nextIdValue = (this.nextIdValue + 1) % 1000;
+    return id.toString().padStart(3, "0");
   }
 }
