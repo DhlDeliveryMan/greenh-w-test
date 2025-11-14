@@ -8,7 +8,7 @@ export interface Command {
     | "who"
     | "ping"
     | "warning";
-  uuid?: string;
+  id?: string;
   stage?: number;
   actuator?: Actuator;
   value?: boolean | number;
