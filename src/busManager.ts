@@ -1,11 +1,14 @@
 import { RS485Handler } from "./rs485Hanlder";
 import { uuid } from "uuidv4";
+import type { Command } from "./types";
+
+type RequestPayload = Record<string, any> & { cmd: string };
 
 type PendingRequest = {
   id: string;
-  payload: Record<string, any>;
+  payload: Command & RequestPayload;
   timeoutMs: number;
-  resolve: (value: any) => void;
+  resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timer?: NodeJS.Timeout;
 };
@@ -33,11 +36,14 @@ export class BusManager {
   }
 
   public request(
-    payload: Record<string, any>,
+    payload: RequestPayload,
     timeoutMs = 500
-  ): Promise<any> {
+  ): Promise<unknown> {
     const packetId = uuid();
-    const packet = { ...payload, id: packetId };
+    const packet: Command & RequestPayload = {
+      ...payload,
+      id: packetId,
+    };
 
     return new Promise((resolve, reject) => {
       this.queue.push({
@@ -58,8 +64,7 @@ export class BusManager {
 
     this.current = next;
     try {
-      const serialized = JSON.stringify(next.payload) + "\n";
-      await this.transport.sendRaw(serialized);
+      await this.transport.sendCommand(next.payload);
       next.timer = setTimeout(() => this.handleTimeout(), next.timeoutMs);
     } catch (err) {
       this.resolveCurrent(err, undefined);
@@ -82,9 +87,7 @@ export class BusManager {
 
   private resolveCurrent(error: unknown, result: unknown) {
     if (!this.current) return;
-    if (this.current.timer) {
-      clearTimeout(this.current.timer);
-    }
+    if (this.current.timer) clearTimeout(this.current.timer);
 
     const { resolve, reject } = this.current;
     this.current = undefined;

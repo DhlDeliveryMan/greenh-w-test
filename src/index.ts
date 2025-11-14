@@ -7,6 +7,7 @@ import { SensorHandler } from "./sensorHandler";
 import { WarningHandler } from "./warningHandler";
 import { uuid } from "uuidv4";
 import { RS485Handler, RS485Options } from "./rs485Hanlder";
+import { BusManager } from "./busManager";
 
 const SOCKET_PATH = "/tmp/greenhouse.sock";
 type RemoteStatus = {
@@ -80,6 +81,10 @@ if (process.env.RS485_RE_ACTIVE_LOW) {
 }
 
 const rs485Handler = new RS485Handler(rs485Options);
+const busManager = new BusManager(rs485Handler);
+busManager.init().catch((err) => {
+  console.error("Failed to initialize RS485 bus manager", err);
+});
 let heartbeatMonitorTimer: NodeJS.Timeout | undefined;
 
 const markRemoteDisconnected = (
@@ -303,15 +308,19 @@ process.stdin.on("data", (input: string | Buffer) => {
     warningHandler.issueWarning(warning);
   }
   if (key === "w") {
-    const command: types.Command = { cmd: "who", uuid: uuid() };
-    rs485Handler
-      .sendCommand(command)
+    busManager
+      .request({ cmd: "who" }, 1000)
+      .then((reply) =>
+        console.log("[RS485] who response", JSON.stringify(reply))
+      )
       .catch((err) => console.error("Failed to send RS485 who command", err));
   }
   if (key === "p") {
-    const command: types.Command = { cmd: "ping", uuid: uuid() };
-    rs485Handler
-      .sendCommand(command)
+    busManager
+      .request({ cmd: "ping" }, 1000)
+      .then((reply) =>
+        console.log("[RS485] ping response", JSON.stringify(reply))
+      )
       .catch((err) => console.error("Failed to send RS485 ping command", err));
   }
 });
@@ -346,15 +355,17 @@ const server = net.createServer((socket) => {
         if (isCommandMessage(msg)) {
           const packet: types.Command = {
             ...msg,
-            uuid: msg.uuid ?? uuid(),
+            id: (msg as any).id ?? (msg as any).uuid ?? uuid(),
           };
-          rs485Handler
-            .sendCommand(packet)
-            .then(() => sendAck(socket, { cmd: packet.cmd, uuid: packet.uuid }))
+          busManager
+            .request(packet)
+            .then((reply) =>
+              sendAck(socket, { cmd: packet.cmd, id: packet.id, reply })
+            )
             .catch((err) =>
               sendErrorEvent(socket, err as Error, {
                 cmd: packet.cmd,
-                uuid: packet.uuid,
+                id: packet.id,
               })
             );
         }

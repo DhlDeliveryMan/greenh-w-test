@@ -7,7 +7,8 @@ export interface Command {
     | "enable_auto"
     | "who"
     | "ping"
-    | "warning";
+    | "warning"
+    | string;
   id?: string;
   stage?: number;
   actuator?: Actuator;
