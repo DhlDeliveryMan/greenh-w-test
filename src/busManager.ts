@@ -1,0 +1,97 @@
+import { RS485Handler } from "./rs485Hanlder";
+import { uuid } from "uuidv4";
+
+type PendingRequest = {
+  id: string;
+  payload: Record<string, any>;
+  timeoutMs: number;
+  resolve: (value: any) => void;
+  reject: (reason?: unknown) => void;
+  timer?: NodeJS.Timeout;
+};
+
+const isReplyMessage = (
+  payload: unknown
+): payload is { replyTo?: string; [key: string]: any } =>
+  !!payload && typeof payload === "object";
+
+export class BusManager {
+  private readonly transport: RS485Handler;
+  private initialized = false;
+  private queue: PendingRequest[] = [];
+  private current?: PendingRequest;
+
+  constructor(transport: RS485Handler) {
+    this.transport = transport;
+    this.handleMessage = this.handleMessage.bind(this);
+  }
+
+  public async init(): Promise<void> {
+    if (this.initialized) return;
+    this.transport.on("message", this.handleMessage);
+    this.initialized = true;
+  }
+
+  public request(
+    payload: Record<string, any>,
+    timeoutMs = 500
+  ): Promise<any> {
+    const packetId = uuid();
+    const packet = { ...payload, id: packetId };
+
+    return new Promise((resolve, reject) => {
+      this.queue.push({
+        id: packetId,
+        payload: packet,
+        timeoutMs,
+        resolve,
+        reject,
+      });
+      this.processQueue();
+    });
+  }
+
+  private async processQueue(): Promise<void> {
+    if (this.current) return;
+    const next = this.queue.shift();
+    if (!next) return;
+
+    this.current = next;
+    try {
+      const serialized = JSON.stringify(next.payload) + "\n";
+      await this.transport.sendRaw(serialized);
+      next.timer = setTimeout(() => this.handleTimeout(), next.timeoutMs);
+    } catch (err) {
+      this.resolveCurrent(err, undefined);
+    }
+  }
+
+  private handleMessage(message: unknown) {
+    if (!this.current || !isReplyMessage(message)) return;
+    if (message.replyTo !== this.current.id) return;
+    this.resolveCurrent(undefined, message);
+  }
+
+  private handleTimeout() {
+    if (!this.current) return;
+    const error = new Error(
+      `RS485 request ${this.current.id} timed out after ${this.current.timeoutMs}ms`
+    );
+    this.resolveCurrent(error, undefined);
+  }
+
+  private resolveCurrent(error: unknown, result: unknown) {
+    if (!this.current) return;
+    if (this.current.timer) {
+      clearTimeout(this.current.timer);
+    }
+
+    const { resolve, reject } = this.current;
+    this.current = undefined;
+
+    if (error) reject(error);
+    else resolve(result);
+
+    this.processQueue();
+  }
+}
