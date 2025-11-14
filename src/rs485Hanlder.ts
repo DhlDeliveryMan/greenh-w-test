@@ -54,7 +54,7 @@ const DEFAULT_OPTIONS: InternalRS485Options = {
   driverEnablePin: 18,
   receiverEnablePin: 23,
   receiverEnableActiveLow: true,
-  turnaroundDelayMs: 20,
+  turnaroundDelayMs: 50,
   autoReconnect: true,
   reconnectIntervalMs: 5000,
   logTraffic: true,
