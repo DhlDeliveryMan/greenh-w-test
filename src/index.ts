@@ -311,7 +311,7 @@ process.stdin.on("data", (input: string | Buffer) => {
   }
   if (key === "w") {
     busManager
-      .request({ cmd: "who" }, 1000)
+      .request({ cmd: "who" }, 3000)
       .then((reply) =>
         console.log("[RS485] who response", JSON.stringify(reply))
       )
@@ -319,7 +319,7 @@ process.stdin.on("data", (input: string | Buffer) => {
   }
   if (key === "p") {
     busManager
-      .request({ cmd: "ping" }, 1000)
+      .request({ cmd: "ping" }, 3000)
       .then((reply) =>
         console.log("[RS485] ping response", JSON.stringify(reply))
       )
