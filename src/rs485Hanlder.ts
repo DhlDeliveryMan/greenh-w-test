@@ -45,7 +45,7 @@ type InternalRS485Options = Required<
 
 const DEFAULT_OPTIONS: InternalRS485Options = {
   path: "/dev/serial0",
-  baudRate: 9600,
+  baudRate: 115200,
   dataBits: 8,
   stopBits: 1,
   parity: "none",
