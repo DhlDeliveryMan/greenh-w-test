@@ -33,6 +33,8 @@ type InternalRS485Options = Required<
     | "stopBits"
     | "parity"
     | "delimiter"
+    | "driverEnablePin"
+    | "receiverEnablePin"
     | "receiverEnableActiveLow"
     | "turnaroundDelayMs"
     | "autoReconnect"
@@ -48,9 +50,9 @@ const DEFAULT_OPTIONS: InternalRS485Options = {
   stopBits: 1,
   parity: "none",
   delimiter: "\n",
-  enablePin: 18,
-  driverEnablePin: undefined,
-  receiverEnablePin: undefined,
+  enablePin: undefined,
+  driverEnablePin: 18,
+  receiverEnablePin: 23,
   receiverEnableActiveLow: true,
   turnaroundDelayMs: 50,
   autoReconnect: true,
