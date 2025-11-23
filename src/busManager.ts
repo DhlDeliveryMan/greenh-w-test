@@ -30,10 +30,7 @@ export class BusManager {
     this.initialized = true;
   }
 
-  public request(
-    payload: RequestPayload,
-    timeoutMs = 500
-  ): Promise<unknown> {
+  public request(payload: RequestPayload, timeoutMs = 500): Promise<unknown> {
     const packetId = payload.id ?? this.nextRequestId();
     const packet: Command & RequestPayload = {
       ...payload,

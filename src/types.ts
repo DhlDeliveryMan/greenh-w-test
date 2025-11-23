@@ -14,6 +14,7 @@ export interface Command {
   actuator?: Actuator;
   value?: boolean | number;
   payload?: Record<string, unknown>;
+  node?: string;
 }
 
 export interface EventMessage {

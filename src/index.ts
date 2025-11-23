@@ -2,7 +2,6 @@ import net from "node:net";
 import fs from "node:fs";
 import type types = require("./types");
 import { DatabaseHandler } from "./database/database";
-import { cpu, cpuTemperature } from "systeminformation";
 import { SensorHandler } from "./sensorHandler";
 import { WarningHandler } from "./warningHandler";
 import { uuid } from "uuidv4";
@@ -40,10 +39,10 @@ const parseNumber = (value?: string) => {
 const HEARTBEAT_TIMEOUT_MS =
   parseNumber(process.env.RS485_HEARTBEAT_TIMEOUT_MS) ?? 15000;
 
-const RS485_DEBUG = process.env.RS485_DEBUG;
+const RS485_DEBUG = process.env.RS485_DEBUG ?? "";
 
 const rs485Options: RS485Options = {
-  logTraffic: RS485_DEBUG ? RS485_DEBUG !== "0" : true,
+  logTraffic: RS485_DEBUG !== "" && RS485_DEBUG !== "0",
   driverEnablePin: 18, // Pi GPIO18 ↔ MAX485 DE
   receiverEnablePin: 23, // Pi GPIO23 ↔ MAX485 RE
   receiverEnableActiveLow: true,
@@ -86,8 +85,6 @@ busManager.init().catch((err) => {
   console.error("Failed to initialize RS485 bus manager", err);
 });
 let heartbeatMonitorTimer: NodeJS.Timeout | undefined;
-
-rs485Handler.on("data", (buf) => console.log("[raw]", buf.toString("hex")));
 
 const markRemoteDisconnected = (
   reason?: string,
@@ -311,7 +308,7 @@ process.stdin.on("data", (input: string | Buffer) => {
   }
   if (key === "w") {
     busManager
-      .request({ cmd: "who" }, 3000)
+      .request({ cmd: "who", node: "a" }, 3000)
       .then((reply) =>
         console.log("[RS485] who response", JSON.stringify(reply))
       )
