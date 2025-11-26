@@ -12,15 +12,23 @@ type PendingRequest = {
   timer?: NodeJS.Timeout;
 };
 
+interface BusManagerOptions {
+  interRequestDelayMs?: number;
+}
+
 export class BusManager {
   private readonly transport: RS485Handler;
+  private readonly interRequestDelayMs: number;
   private initialized = false;
   private queue: PendingRequest[] = [];
   private current?: PendingRequest;
   private nextIdValue = 0;
+  private nextAvailableAt = 0;
+  private queueTimer?: NodeJS.Timeout;
 
-  constructor(transport: RS485Handler) {
+  constructor(transport: RS485Handler, options: BusManagerOptions = {}) {
     this.transport = transport;
+    this.interRequestDelayMs = Math.max(0, options.interRequestDelayMs ?? 10);
     this.handleMessage = this.handleMessage.bind(this);
   }
 
@@ -51,6 +59,17 @@ export class BusManager {
 
   private async processQueue(): Promise<void> {
     if (this.current) return;
+    if (this.queueTimer) return;
+
+    const now = Date.now();
+    if (now < this.nextAvailableAt) {
+      this.queueTimer = setTimeout(() => {
+        this.queueTimer = undefined;
+        this.processQueue();
+      }, this.nextAvailableAt - now);
+      return;
+    }
+
     const next = this.queue.shift();
     if (!next) return;
 
@@ -103,6 +122,7 @@ export class BusManager {
 
     const { resolve, reject } = this.current;
     this.current = undefined;
+    this.nextAvailableAt = Date.now() + this.interRequestDelayMs;
 
     if (error) reject(error);
     else resolve(result);
