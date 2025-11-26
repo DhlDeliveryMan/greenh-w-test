@@ -65,16 +65,28 @@ export class BusManager {
 
   private handleMessage(message: unknown) {
     if (!this.current || !message || typeof message !== "object") return;
-    const replyToRaw = (message as Record<string, unknown>).replyTo;
-    if (replyToRaw === undefined || replyToRaw === null) return;
-    const replyTo = String(replyToRaw);
-    if (replyTo !== this.current.id) {
+    const msg = message as Record<string, unknown>;
+    const replyTo = this.normalizeId(
+      msg.replyTo ?? msg.id ?? msg.reply_to ?? msg.responseTo
+    );
+    if (!replyTo) return;
+
+    const expected = this.normalizeId(this.current.id);
+    if (replyTo !== expected) {
       console.warn(
-        `[Bus] Received reply for id=${replyTo}, expected ${this.current.id}`
+        `[Bus] Received reply for id=${replyTo}, expected ${expected}`
       );
       return;
     }
     this.resolveCurrent(undefined, message);
+  }
+
+  private normalizeId(value: unknown): string | null {
+    if (value === undefined || value === null) return null;
+    const str = String(value).trim();
+    if (!str) return null;
+    // allow numeric replyTo values to match zero-padded request ids
+    return str.replace(/^0+(?=\d)/, "");
   }
 
   private handleTimeout() {
