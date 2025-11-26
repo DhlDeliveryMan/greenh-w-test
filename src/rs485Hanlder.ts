@@ -54,7 +54,7 @@ const DEFAULT_OPTIONS: InternalRS485Options = {
   driverEnablePin: 18,
   receiverEnablePin: 23,
   receiverEnableActiveLow: true,
-  turnaroundDelayMs: 30,
+  turnaroundDelayMs: 5,
   autoReconnect: true,
   reconnectIntervalMs: 5000,
   logTraffic: false,
@@ -115,10 +115,11 @@ export class RS485Handler extends EventEmitter {
       });
       this.emit("tx", buffer);
     } finally {
+      await this.driveTransceiver(false);
+      // wait briefly after switching back to RX so the transceiver settles
       if (this.options.turnaroundDelayMs > 0) {
         await sleep(this.options.turnaroundDelayMs);
       }
-      await this.driveTransceiver(false);
     }
   }
 
