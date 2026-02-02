@@ -8,12 +8,13 @@ export interface Command {
     | "who"
     | "ping"
     | "warning"
+    | "pwm"
     | string;
   id?: string;
   stage?: number;
   actuator?: Actuator;
   value?: boolean | number;
-  payload?: Record<string, unknown>;
+  payload?: Record<string, unknown> | PWMPayload;
   node?: string;
 }
 
@@ -26,15 +27,18 @@ export type Status = "connected" | "disconnected" | "fail";
 
 export type SensorType =
   | "temperature"
+  | "air_temperature"
   | "humidity"
   | "soil_moisture"
   | "co2"
-  | "TVOC"
-  | "humidity"
-  | "air_temperature"
+  | "tvoc"
+  | "water_temp"
+  | "water_level"
   | "water_flow"
   | "switch_position"
-  | "utitlization";
+  | "utilization"
+  | "panel_state"
+  | string;
 
 export interface SensorReading {
   id: string;
@@ -61,4 +65,18 @@ export interface IAlert {
   sensorId?: number;
   threshold?: number;
   currentValue?: number;
+}
+
+export interface PWMPayload {
+  pin: number | string;
+  frequency?: number; // Hz
+  duty: number; // 0..1 (fractional) or 0..100 depending on node
+  durationMs?: number; // optional duration to run PWM
+}
+
+export interface PWMCommand {
+  cmd: "pwm";
+  id?: string;
+  node?: string;
+  payload: PWMPayload;
 }

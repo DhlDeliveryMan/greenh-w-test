@@ -1,8 +1,24 @@
 import { RS485Handler } from "./rs485Hanlder";
 import type { Command } from "./types";
 
-type RequestPayload = Record<string, any> & { cmd: string; id?: string };
+type RequestPayload = {
+  cmd: string;
+  id?: string;
+  node?: string;
+  payload?: Command["payload"];
+} & Record<string, unknown>;
 
+/**
+ * Represents a pending request waiting for a response.
+ * 
+ * @typedef {Object} PendingRequest
+ * @property {string} id - Unique identifier for the pending request
+ * @property {Command & RequestPayload} payload - The command and request payload data
+ * @property {number} timeoutMs - Timeout duration in milliseconds
+ * @property {(value: unknown) => void} resolve - Callback function to resolve the pending request with a value
+ * @property {(reason?: unknown) => void} reject - Callback function to reject the pending request with an optional reason
+ * @property {NodeJS.Timeout} [timer] - Optional Node.js timeout handle for managing request timeout
+ */
 type PendingRequest = {
   id: string;
   payload: Command & RequestPayload;
@@ -25,6 +41,8 @@ export class BusManager {
   private nextIdValue = 0;
   private nextAvailableAt = 0;
   private queueTimer?: NodeJS.Timeout;
+  // serialize direct (fire-and-forget) sends so we don't toggle DE/RE concurrently
+  private directSendLock: Promise<void> = Promise.resolve();
 
   constructor(transport: RS485Handler, options: BusManagerOptions = {}) {
     this.transport = transport;
@@ -37,9 +55,15 @@ export class BusManager {
     this.transport.on("message", this.handleMessage);
     this.initialized = true;
   }
-
+  /**
+ * Creates a command packet with a unique identifier.
+ * @param payload - The request payload containing the command data and parameters
+ * @param packetId - A unique identifier assigned to this packet for tracking and response correlation
+ * @returns {Command & RequestPayload} A packet object combining command metadata with request payload data, including the assigned packet ID
+ */
   public request(payload: RequestPayload, timeoutMs = 500): Promise<unknown> {
     const packetId = payload.id ?? this.nextRequestId();
+
     const packet: Command & RequestPayload = {
       ...payload,
       id: packetId,
@@ -57,7 +81,78 @@ export class BusManager {
     });
   }
 
-  private async processQueue(): Promise<void> {
+  /**
+   * Send an actuator-style command using the existing request queue.
+   * Accepts any `Command`-shaped payload; useful for higher-level helpers.
+   */
+  public sendActuatorCommand(
+    payload: RequestPayload,
+    timeoutMs = 2000
+  ): Promise<unknown> {
+    return this.request(payload, timeoutMs);
+  }
+
+  /**
+   * Send a command without waiting for a reply. This will not occupy the
+   * request queue but will still respect inter-request spacing and is
+   * serialized with other direct sends to avoid DE/RE races.
+   */
+  public async sendNoReply(payload: RequestPayload): Promise<void> {
+    // append to lock chain
+    const doSend = async () => {
+      const now = Date.now();
+      if (now < this.nextAvailableAt) {
+        await new Promise((r) => setTimeout(r, this.nextAvailableAt - now));
+      }
+
+      const packetId = payload.id ?? this.nextRequestId();
+      const packet: RequestPayload & { id: string } = { ...payload, id: packetId } as any;
+
+      try {
+        await this.transport.sendCommand(packet);
+      } finally {
+        this.nextAvailableAt = Date.now() + this.interRequestDelayMs;
+      }
+    };
+
+    // chain onto the lock so concurrent direct sends are serialized
+    this.directSendLock = this.directSendLock.then(() => doSend());
+    // return a promise that resolves when this send completes
+    return this.directSendLock;
+  }
+
+  /**
+   * Convenience helper for sending a PWM command to a node.
+   */
+  public sendPWM(
+    node: string | undefined,
+    pin: number | string,
+    duty: number,
+    frequency?: number,
+    durationMs?: number,
+    timeoutMs = 0
+  ): Promise<unknown> {
+    const packet: RequestPayload = {
+      cmd: "pwm",
+      node,
+      payload: {
+        pin,
+        duty,
+        frequency,
+        durationMs,
+      },
+    } as RequestPayload;
+
+    // If caller requested a no-timeout send, use the non-blocking path so the
+    // queued request pipeline is not held waiting for a reply.
+    if (!timeoutMs || timeoutMs <= 0) {
+      return this.sendNoReply(packet).then(() => undefined);
+    }
+
+    return this.request(packet, timeoutMs);
+  }
+
+  private processQueue(): void {
     if (this.current) return;
     if (this.queueTimer) return;
 
@@ -74,9 +169,11 @@ export class BusManager {
     if (!next) return;
 
     this.current = next;
+    next.timer = setTimeout(() => this.handleTimeout(), next.timeoutMs);
+
     try {
-      await this.transport.sendCommand(next.payload);
-      next.timer = setTimeout(() => this.handleTimeout(), next.timeoutMs);
+      const sendPromise = this.transport.sendCommand(next.payload);
+      sendPromise.catch((err) => this.resolveCurrent(err, undefined));
     } catch (err) {
       this.resolveCurrent(err, undefined);
     }
@@ -105,7 +202,8 @@ export class BusManager {
     const str = String(value).trim();
     if (!str) return null;
     // allow numeric replyTo values to match zero-padded request ids
-    return str.replace(/^0+(?=\d)/, "");
+    const normalized = str.replace(/^0+(?=\d)/, "");
+    return normalized.length > 0 ? normalized : "0";
   }
 
   private handleTimeout() {

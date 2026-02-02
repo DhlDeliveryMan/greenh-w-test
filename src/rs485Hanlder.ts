@@ -22,6 +22,7 @@ export interface RS485Options {
   autoReconnect?: boolean;
   reconnectIntervalMs?: number;
   logTraffic?: boolean;
+  rxOnly?: boolean; // force receiver-only mode (DE always low)
 }
 
 type InternalRS485Options = Required<
@@ -45,7 +46,7 @@ type InternalRS485Options = Required<
 
 const DEFAULT_OPTIONS: InternalRS485Options = {
   path: "/dev/serial0",
-  baudRate: 115200,
+  baudRate: 9600,
   dataBits: 8,
   stopBits: 1,
   parity: "none",
@@ -57,7 +58,7 @@ const DEFAULT_OPTIONS: InternalRS485Options = {
   turnaroundDelayMs: 2,
   autoReconnect: true,
   reconnectIntervalMs: 5000,
-  logTraffic: false,
+  logTraffic: true,
 };
 
 export class RS485Handler extends EventEmitter {
@@ -91,13 +92,24 @@ export class RS485Handler extends EventEmitter {
 
   public async sendRaw(payload: Buffer | string): Promise<void> {
     if (!payload || (Buffer.isBuffer(payload) && payload.length === 0)) return;
+
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] sendRaw starting, ensuring port ready`);
+    }
+
     await this.ensurePortReady();
+
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] port ready, preparing buffer`);
+    }
+
     const buffer = Buffer.isBuffer(payload)
       ? payload
       : Buffer.from(payload, "utf8");
 
     if (this.options.logTraffic) {
       console.debug(`[RS485] => ${buffer.toString("hex")}`);
+      console.debug(`[RS485] about to call driveTransceiver(true)`);
     }
 
     await this.driveTransceiver(true);
@@ -126,6 +138,10 @@ export class RS485Handler extends EventEmitter {
   public async sendCommand(
     command: Command | { cmd: string; id: string }
   ): Promise<void> {
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] sendCommand called with:`, command);
+    }
+
     const serialized = JSON.stringify(command);
     const delimiterBuffer = Buffer.isBuffer(this.options.delimiter)
       ? this.options.delimiter
@@ -138,6 +154,7 @@ export class RS485Handler extends EventEmitter {
 
     if (this.options.logTraffic) {
       console.debug(`[RS485] => ${serialized}`);
+      console.debug(`[RS485] sendCommand about to call sendRaw`);
     }
 
     await this.sendRaw(payload);
@@ -180,6 +197,10 @@ export class RS485Handler extends EventEmitter {
       throw err;
     });
 
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] Port opened: ${this.options.path} @ ${this.options.baudRate} baud`);
+    }
+
     this.attachSerialListeners();
     this.setStatus("connected");
   }
@@ -204,7 +225,13 @@ export class RS485Handler extends EventEmitter {
         new ReadlineParser({ delimiter: this.options.delimiter })
       );
       this.parser = parser;
+      if (this.options.logTraffic) {
+        console.debug(`[RS485] ReadlineParser attached with delimiter: ${JSON.stringify(this.options.delimiter)}`);
+      }
       parser.on("data", (data: string | Buffer) => this.handleIncoming(data));
+      parser.on("error", (err: Error) => {
+        console.warn(`[RS485] Parser error:`, err);
+      });
     } else {
       this.port.on("data", (data: Buffer) => this.handleIncoming(data));
     }
@@ -214,6 +241,10 @@ export class RS485Handler extends EventEmitter {
     const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data, "utf8");
 
     if (!buffer.length) return;
+
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] raw data received: ${buffer.toString("hex")} (${buffer.length} bytes)`);
+    }
 
     this.emit("data", buffer);
 
@@ -244,7 +275,9 @@ export class RS485Handler extends EventEmitter {
 
     const configurePin = (pin: number, label: string): Gpio | undefined => {
       try {
-        return new Gpio(pin, "out");
+        const gpio = new Gpio(pin, "out");
+        console.log(`[RS485] GPIO ${pin} (${label}) configured successfully`);
+        return gpio;
       } catch (err) {
         console.warn(`[RS485] Failed to configure GPIO ${pin} (${label})`, err);
         return undefined;
@@ -287,12 +320,31 @@ export class RS485Handler extends EventEmitter {
   }
 
   private async driveTransceiver(transmit: boolean) {
+    // If rxOnly mode, never drive transmitter
+    if (this.options.rxOnly) {
+      transmit = false;
+    }
+
+    if (this.options.logTraffic) {
+      console.debug(`[RS485] driveTransceiver called: transmit=${transmit}, driverGpio=${!!this.driverEnableGpio}, receiverGpio=${!!this.receiverEnableGpio}`);
+    }
+
     const toggle = (gpio: Gpio | undefined, level: 0 | 1, label: string) => {
-      if (!gpio) return;
+      if (!gpio) {
+        if (this.options.logTraffic) {
+          console.debug(`[RS485] ${label} GPIO is undefined, skipping writeSync`);
+        }
+        return;
+      }
       try {
+        const before = gpio.readSync();
         gpio.writeSync(level);
+        const after = gpio.readSync();
+        if (this.options.logTraffic) {
+          console.debug(`[RS485] ${label} writeSync: ${before} → ${level} (read back: ${after}) (${transmit ? 'TX' : 'RX'})`);
+        }
       } catch (err) {
-        console.warn(`[RS485] Failed to toggle ${label} pin`, err);
+        console.warn(`[RS485] Failed to toggle ${label} pin:`, err);
       }
     };
 

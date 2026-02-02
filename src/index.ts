@@ -7,8 +7,12 @@ import { WarningHandler } from "./warningHandler";
 import { uuid } from "uuidv4";
 import { RS485Handler, RS485Options } from "./rs485Hanlder";
 import { BusManager } from "./busManager";
+import { registerDispatch, handleNodeMessage, getActuatorState, setBroadcaster, importActuatorState, setPersistFn } from "./actuatorManager";
+import { PanelManager } from "./panel/panelManager";
+import { panelConfig } from "./panel/config";
+import { DisplayManager } from "./panel/displayManager";
 
-const SOCKET_PATH = "/tmp/greenhouse.sock";
+const SOCKET_PATH = "/tmp/greenhouse2.sock";
 type RemoteStatus = {
   connected: boolean;
   device?: string;
@@ -18,7 +22,7 @@ type RemoteStatus = {
   disconnectedAt?: number;
   reason?: string;
 };
-
+``
 const RS485_STATUS: {
   status: types.Status;
   error?: string;
@@ -125,7 +129,7 @@ const startHeartbeatMonitor = () => {
 
 try {
   fs.unlinkSync(SOCKET_PATH);
-} catch (e) {}
+} catch (e) { }
 
 process.stdin.setRawMode(true);
 process.stdin.resume();
@@ -134,8 +138,63 @@ process.stdin.setEncoding("utf8");
 const databaseHanlder = new DatabaseHandler();
 const sensorHandler = new SensorHandler();
 const warningHandler = new WarningHandler();
+const panelManager = new PanelManager(panelConfig);
+
+// Get MCP23017 0x21 driver for TM1637
+const mcp21Driver = panelManager.getMCP("mcp23017-0x21");
+
+const displayManager = new DisplayManager({
+  lcd1602s: [
+    { id: "lcd1", address: 0x27, device: 1 },
+    { id: "lcd2", address: 0x23, device: 1 },
+  ],
+  tm1637: mcp21Driver ? {
+    mcpChip: mcp21Driver,
+    clkPin: 14, // GPB6 on 0x21
+    dioPin: 15, // GPB7 on 0x21
+    brightness: 4,
+    digits: 6,
+    digitOrder: [2, 1, 0, 5, 4, 3],
+  } : undefined,
+});
+
+// ===== UNIFIED SENSOR CACHE =====
+const sensorCache = new Map<string, { value: number | boolean; timestamp: string }>();
+
+export function getLatestReading(sensorId: string): { value: number | boolean; timestamp: string } | undefined {
+  return sensorCache.get(sensorId);
+}
+
+export function getAllLatestReadings(): types.SensorReading[] {
+  const readings: types.SensorReading[] = [];
+  for (const [id, data] of sensorCache.entries()) {
+    // infer type from id or use generic; improve later if needed
+    readings.push({ id, type: "temperature", value: data.value, timestamp: data.timestamp });
+  }
+  return readings;
+}
+
+// seed actuator store from DB and hook persistence
+try {
+  const rows = databaseHanlder.loadActuatorStates();
+  if (rows && rows.length) {
+    for (const r of rows) {
+      try {
+        // import without re-persisting
+        // shape: { node, pin, running, duty, updated_at }
+        importActuatorState({ node: r.node, pin: r.pin, running: !!r.running, duty: r.duty, updatedAt: new Date(r.updated_at).getTime() });
+      } catch (e) { }
+    }
+  }
+} catch (e) { }
+
+setPersistFn((entry) => {
+  databaseHanlder.saveActuatorState(entry);
+});
 
 const clients = new Set<net.Socket>();
+
+// pending dispatches and actuator state are managed by actuatorManager
 
 const isCommandMessage = (payload: unknown): payload is types.Command => {
   if (!payload || typeof payload !== "object") return false;
@@ -154,10 +213,44 @@ const broadcast = (payload: string) => {
   }
 };
 
+// give actuatorManager a way to broadcast updates to connected clients
+setBroadcaster(broadcast);
+
 const broadcastStatusUpdate = () => {
   const payload =
     JSON.stringify({ event: "status_update", data: RS485_STATUS }) + "\n";
   broadcast(payload);
+};
+
+const handleSensorUpdate = (msg: Record<string, unknown>) => {
+  const isEvent = msg.event === "sensor_update" && msg.data && typeof msg.data === "object";
+  const payload = (isEvent ? (msg.data as Record<string, unknown>) : msg) as Record<string, unknown>;
+  const id = typeof payload.id === "string" ? payload.id : undefined;
+  const value = payload.value as number | boolean | undefined;
+  const type = typeof payload.type === "string" ? payload.type : undefined;
+  if (!id || value === undefined || !type) return;
+
+  const reading: types.SensorReading = {
+    id,
+    type: type as types.SensorType,
+    value,
+    timestamp:
+      typeof payload.timestamp === "string" && payload.timestamp
+        ? payload.timestamp
+        : new Date().toISOString(),
+  };
+
+  // Update unified cache
+  sensorCache.set(reading.id, { value: reading.value, timestamp: reading.timestamp });
+
+  try {
+    databaseHanlder.saveSensorReading(reading);
+  } catch (err) {
+    console.error("Failed to persist RS485 sensor reading", err);
+  }
+
+  const packet = JSON.stringify({ event: "sensor_update", data: reading }) + "\n";
+  broadcast(packet);
 };
 
 const handleRemotePayload = (payload: unknown) => {
@@ -259,6 +352,24 @@ rs485Handler.on("message", (payload: unknown) => {
     JSON.stringify({ event: "rs485_message", data: payload }) + "\n";
   broadcast(packet);
   handleRemotePayload(payload);
+
+  if (payload && typeof payload === "object") {
+    try {
+      handleSensorUpdate(payload as Record<string, unknown>);
+    } catch (err) {
+      console.error("Failed to handle sensor_update", err);
+    }
+  }
+
+  try {
+    if (payload && typeof payload === "object") {
+      const msg = payload as Record<string, unknown>;
+      // delegate dispatch/actuator handling to actuatorManager
+      handleNodeMessage(msg);
+    }
+  } catch (err) {
+    console.error("Failed to handle node message", err);
+  }
 });
 
 rs485Handler.init().catch((err) => {
@@ -270,6 +381,9 @@ rs485Handler.init().catch((err) => {
 startHeartbeatMonitor();
 
 sensorHandler.on("reading", (reading: types.SensorReading) => {
+  // Update unified cache
+  sensorCache.set(reading.id, { value: reading.value, timestamp: reading.timestamp });
+
   try {
     databaseHanlder.saveSensorReading(reading);
   } catch (err) {
@@ -287,6 +401,18 @@ warningHandler.on("warning", (alert: types.IAlert) => {
   broadcast(payload);
 });
 
+panelManager.on("panel_state", (state) => {
+  // Log state changes for visibility in worker stdout
+  // console.log("[panel] state change", JSON.stringify(state));
+  try {
+    const payload = JSON.stringify({ event: "panel_state", data: state }) + "\n";
+    broadcast(payload);
+  } catch (err) {
+    console.error("Failed to broadcast panel_state", err);
+  }
+});
+
+// TTL test keybindings
 process.stdin.on("data", (input: string | Buffer) => {
   const str = typeof input === "string" ? input : input.toString("utf8");
   if (str === "\u0003") process.exit(); // Ctrl+C
@@ -315,10 +441,30 @@ process.stdin.on("data", (input: string | Buffer) => {
       .catch((err) => console.error("Failed to send RS485 who command", err));
   }
   if (key === "p") {
+    console.log("Sending ping...");
     busManager
-      .request({ cmd: "ping" }, 3000)
+      .request({ cmd: "ping", node: 'nano-panel' }, 3000)
       .then((reply) =>
         console.log("[RS485] ping response", JSON.stringify(reply))
+      )
+      .catch((err) => console.error("Failed to send RS485 ping command", err));
+  }
+  if (key === "a") {
+    // example: trigger PWM on node-01 pin 5, 60% duty, 500Hz for 10s
+    busManager
+      .sendPWM("nano-panel", 3, 0.7, 10000, 10000)
+      .then((reply) => console.log("[RS485] pwm response", JSON.stringify(reply)))
+      .catch((err) => console.error("Failed to send PWM command", err));
+    // busManager
+    //   .sendPWM("esp-main", 33, 1, 10000, 30000)
+    //   .then((reply) => console.log("[RS485] pwm response", JSON.stringify(reply)))
+    //   .catch((err) => console.error("Failed to send PWM command", err));
+  }
+  if (key === 't') {
+    busManager
+      .request({ cmd: "readCO2", node: 'esp-main' }, 5000)
+      .then((reply) =>
+        console.log("[RS485] temp response", JSON.stringify(reply))
       )
       .catch((err) => console.error("Failed to send RS485 ping command", err));
   }
@@ -356,17 +502,55 @@ const server = net.createServer((socket) => {
             ...msg,
             id: (msg as any).id ?? (msg as any).uuid ?? uuid(),
           };
-          busManager
-            .request(packet)
-            .then((reply) =>
-              sendAck(socket, { cmd: packet.cmd, id: packet.id, reply })
-            )
-            .catch((err) =>
-              sendErrorEvent(socket, err as Error, {
-                cmd: packet.cmd,
-                id: packet.id,
-              })
-            );
+
+          // Allow clients to query current actuator state
+          if (packet.cmd === "get_actuator_state") {
+            try {
+              const nodeQ = (packet as any).node as string | undefined;
+              const pinQ = (packet as any).payload?.pin as number | string | undefined;
+              const state = getActuatorState(nodeQ, pinQ);
+              sendAck(socket, { cmd: packet.cmd, id: packet.id, state });
+            } catch (err) {
+              sendErrorEvent(socket, err as Error, { cmd: packet.cmd, id: packet.id });
+            }
+            return;
+          }
+
+          // For actuator/pwm commands, avoid an automatic timeout because
+          // the node may take time to perform the operation and then reply.
+          if (packet.cmd === "pwm") {
+            // Register this dispatch so we can forward later replies or
+            // actuator_state events to the originating client.
+            const idRaw = String(packet.id ?? "");
+            const id = idRaw.replace(/^0+(?=\d)/, "");
+            const expectedPin = (packet as any).payload?.pin ?? (packet as any).payload?.payload?.pin ?? null;
+            registerDispatch(id, socket, expectedPin, 60000);
+
+            // Dispatch PWM as fire-and-forget so it doesn't block the queued
+            // request pipeline. Acknowledgement to client indicates dispatch,
+            // node may still emit actuator_state or a reply later.
+            busManager
+              .sendNoReply(packet as any)
+              .then(() => sendAck(socket, { cmd: packet.cmd, id: packet.id, dispatched: true }))
+              .catch((err) =>
+                sendErrorEvent(socket, err as Error, {
+                  cmd: packet.cmd,
+                  id: packet.id,
+                })
+              );
+          } else {
+            busManager
+              .request(packet as any)
+              .then((reply) =>
+                sendAck(socket, { cmd: packet.cmd, id: packet.id, reply })
+              )
+              .catch((err) =>
+                sendErrorEvent(socket, err as Error, {
+                  cmd: packet.cmd,
+                  id: packet.id,
+                })
+              );
+          }
         }
       } catch (err) {
         console.error("Invalid message", err);
@@ -389,5 +573,18 @@ server.listen(SOCKET_PATH, async () => {
   await sensorHandler.loadSensors();
   await sensorHandler.runAll();
   sensorHandler.startPolling();
+  try {
+    // Initialize panel manager FIRST so MCP pins are configured
+    await panelManager.init();
+    panelManager.start();
+  } catch (err) {
+    console.error("Failed to start panel manager", err);
+  }
+  try {
+    // Now display manager can use the configured MCP pins
+    await displayManager.init();
+  } catch (err) {
+    console.error("Failed to start display manager", err);
+  }
   console.log(`Worker listening on ${SOCKET_PATH}, ${server.address()}`);
 });

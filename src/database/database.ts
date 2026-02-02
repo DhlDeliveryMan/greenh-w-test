@@ -28,10 +28,32 @@ export class DatabaseHandler {
         FOREIGN KEY (sensor_id) REFERENCES sensors(id)
     )
   `;
+  private CREATE_ACTUATORS_TABLE = `
+    CREATE TABLE IF NOT EXISTS actuators (
+        node TEXT,
+        pin TEXT,
+        running INTEGER NOT NULL,
+        duty REAL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (node, pin)
+    )
+  `;
+
+  private CREATE_SETPOINTS_TABLE = `
+    CREATE TABLE IF NOT EXISTS setpoints (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `;
+
+  private setpointsCache = new Map<string, any>();
 
   constructor() {
     this.DATABASE_PATH = `${os.userInfo().homedir}/.ghw/data/greenhouse.db`;
     const dbExists = fs.existsSync(this.DATABASE_PATH);
+    console.log(dbExists ? "Database found." : "Database not found, initializing...");
+    console.log(`Using database at: ${this.DATABASE_PATH}`);
 
     if (!dbExists) {
       this.initializeDatabase();
@@ -42,6 +64,7 @@ export class DatabaseHandler {
 
     this.createTables();
     this.prepareStatements();
+    this.loadSetpoints();
   }
 
   private initializeDatabase() {
@@ -57,6 +80,8 @@ export class DatabaseHandler {
   private createTables() {
     this.database.exec(this.CREATE_SENSORS_TABLE);
     this.database.exec(this.CREATE_SENSOR_READINGS_TABLE);
+    this.database.exec(this.CREATE_ACTUATORS_TABLE);
+    this.database.exec(this.CREATE_SETPOINTS_TABLE);
   }
 
   private prepareStatements() {
@@ -75,6 +100,38 @@ export class DatabaseHandler {
       DELETE FROM sensor_readings
       WHERE timestamp < @cutoff
     `);
+
+    // actuator upsert handled via saveActuatorState method
+  }
+
+  public saveActuatorState(entry: { node?: string; pin?: string | number; running: boolean; duty?: number; updatedAt?: number }) {
+    try {
+      const stmt = this.database.prepare(`
+        INSERT INTO actuators (node, pin, running, duty, updated_at)
+        VALUES (@node, @pin, @running, @duty, @updated_at)
+        ON CONFLICT(node, pin) DO UPDATE SET running = excluded.running, duty = excluded.duty, updated_at = excluded.updated_at
+      `);
+
+      stmt.run({
+        node: entry.node ?? "",
+        pin: entry.pin !== undefined ? String(entry.pin) : "",
+        running: entry.running ? 1 : 0,
+        duty: entry.duty ?? null,
+        updated_at: entry.updatedAt ? new Date(entry.updatedAt).toISOString() : new Date().toISOString(),
+      });
+    } catch (err) {
+      console.error("Failed to persist actuator state", err);
+    }
+  }
+
+  public loadActuatorStates(): Array<{ node?: string; pin?: string; running: boolean; duty?: number; updated_at: string }> {
+    try {
+      const rows = this.database.prepare(`SELECT node, pin, running, duty, updated_at FROM actuators`).all();
+      return rows.map((r: any) => ({ node: r.node || undefined, pin: r.pin || undefined, running: !!r.running, duty: r.duty ?? undefined, updated_at: r.updated_at }));
+    } catch (err) {
+      console.error("Failed to load actuator states", err);
+      return [];
+    }
   }
 
   public saveSensorReading(reading: SensorReading) {
@@ -126,5 +183,50 @@ export class DatabaseHandler {
     } catch (err) {
       console.error("Failed to checkpoint WAL", err);
     }
+  }
+
+  // ===== SETPOINTS MANAGEMENT =====
+
+  private loadSetpoints() {
+    try {
+      const rows = this.database.prepare(`SELECT key, value_json FROM setpoints`).all() as Array<{ key: string; value_json: string }>;
+      for (const row of rows) {
+        try {
+          this.setpointsCache.set(row.key, JSON.parse(row.value_json));
+        } catch (err) {
+          console.error(`Failed to parse setpoint '${row.key}'`, err);
+        }
+      }
+      console.log(`Loaded ${this.setpointsCache.size} setpoints into cache`);
+    } catch (err) {
+      console.error("Failed to load setpoints", err);
+    }
+  }
+
+  public getSetpoint<T = any>(key: string): T | undefined {
+    return this.setpointsCache.get(key);
+  }
+
+  public setSetpoint(key: string, value: any): void {
+    try {
+      const valueJson = JSON.stringify(value);
+      const stmt = this.database.prepare(`
+        INSERT INTO setpoints (key, value_json, updated_at)
+        VALUES (@key, @value_json, @updated_at)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `);
+      stmt.run({ key, value_json: valueJson, updated_at: new Date().toISOString() });
+      this.setpointsCache.set(key, value);
+    } catch (err) {
+      console.error(`Failed to persist setpoint '${key}'`, err);
+    }
+  }
+
+  public getAllSetpoints(): Record<string, any> {
+    const result: Record<string, any> = {};
+    for (const [key, value] of this.setpointsCache.entries()) {
+      result[key] = value;
+    }
+    return result;
   }
 }

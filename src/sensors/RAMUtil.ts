@@ -4,7 +4,7 @@ import { mem } from "systeminformation";
 
 export default class CPUUtil extends Sensor {
   id: string = "ramUtil";
-  type: SensorType = "utitlization";
+  type: SensorType = "utilization";
 
   pollingTime: number = 2000;
   pollingWaitTime: number = 0;
